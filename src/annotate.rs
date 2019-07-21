@@ -234,7 +234,7 @@ fn annotate_tags(
     track_data: TrackData,
 ) -> String {
     lazy_static! {
-        static ref INVALID_FILE_CHRS: Regex = Regex::new(r"[\W\s]+").unwrap();
+        static ref INVALID_FILE_CHRS: Regex = Regex::new(r"[^\w\s.\(\)]+").unwrap();
     }
     
     let mut new_name = format!(
@@ -264,10 +264,6 @@ fn annotate_tags(
     });
     tags.set_title(track_data.track_name);
     tags.set_track(track_data.track_number as u32);
-    tags.set_duration(mp3_duration::from_path(file.as_path()).expect(
-        &format!("error measuring {}", file.display())[..],
-    ).as_millis() as u32);
-    println!("{:?}", tags.duration());
 
     track_data.image_url.ok_or(SimpleError {
         msg: format!("no image for {}", file.display()),
@@ -283,23 +279,27 @@ fn annotate_tags(
 fn annotate_file(
     file: &PathBuf,
     track_data: TrackData,
+    rename_file: bool,
 ) -> Result<(), SimpleError> {
     let mut tags = Tag::new();
-    let new_name = annotate_tags(&mut tags, file, track_data); // annotate tags
+    let new_name = annotate_tags(&mut tags, file, track_data);
 
     tags.write_to_path(file, Version::Id3v24).map_err(SimpleError::from)
-        .and_then(|_| { // rename file
-            file.as_path().file_name().ok_or(SimpleError {
-                msg: format!("{} not file?", file.display()),
-            }).and_then(|file_name| {
-                if new_name != file_name.to_string_lossy() {
-                    return rename(
-                        file,
-                        file.with_file_name(new_name),
-                    ).map_err(SimpleError::from);
-                }
-                Ok(())
-            })
+        .and_then(|_| {
+            if rename_file {
+                return file.as_path().file_name().ok_or(SimpleError {
+                    msg: format!("{} not file?", file.display()),
+                }).and_then(|file_name| {
+                    if new_name != file_name.to_string_lossy() {
+                        return rename(
+                            file,
+                            file.with_file_name(new_name),
+                        ).map_err(SimpleError::from);
+                    }
+                    Ok(())
+                });
+            }
+            return Ok(());
         })
 }
 
@@ -310,22 +310,41 @@ pub fn annotate(
 ) -> Result<(), SimpleError> {
     let abs_path = Path::new("/home/banana/music/").join(&dir.as_path());
 
+    let mut rename_files = true;
     let files = get_tracks_files(&abs_path)?;
     let data = get_tracks_data(album_full, client_with_token)?;
     if files.len() != data.len() {
         println!(
-            "number of files in {} should be {}",
+            "number of files in {} should be {}, not renaming",
             dir.display(),
             data.len(),
         );
+        rename_files = false;
     }
 
     files.iter().zip(
         data.into_iter()
     ).map(|(track_file, track_data)| {
-        annotate_file(track_file, track_data)
-            .and_then(|_| { // add to whitelist
+        annotate_file(track_file, track_data, rename_files)
+            .and_then(|_| {
                 add_whitelist(dir.to_string_lossy().to_string())
             })
+    }).collect()
+}
+
+pub fn test_run(
+    dir: &PathBuf,
+) -> Result<(), SimpleError> {
+    let abs_path = Path::new("/home/banana/music/").join(&dir.as_path());
+
+    let files = get_tracks_files(&abs_path)?;
+
+    files.iter().map(|track_file| {
+        mp3_duration::from_path(track_file.as_path()).map(|_| {
+            ()
+        }).unwrap_or_else(|err| {
+            println!("error measuring {}: {}", track_file.display(), err);
+        });
+        Ok(())
     }).collect()
 }

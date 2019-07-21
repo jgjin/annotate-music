@@ -56,8 +56,7 @@ pub fn get_albums(
             path.is_dir()
         }).filter(|dir| {
             let dir = dir.to_string_lossy().to_string();
-            !WHITELIST.lock().expect("error checking whitelist").contains(&dir) &&
-                dir.contains("jeff-rosenstock_post")
+            !WHITELIST.lock().expect("error checking whitelist").contains(&dir)
         }).collect()
     })
 }
