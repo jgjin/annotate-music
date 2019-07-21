@@ -12,6 +12,9 @@ use std::{
     io::{
         Read,
     },
+    iter::{
+        repeat_with,
+    },
     path::{
         Path,
         PathBuf,
@@ -70,7 +73,7 @@ pub struct TrackData {
 }
 
 impl TrackData {
-    fn release_date_from(
+    pub fn release_date_from(
         album_full: &AlbumFull,
     ) -> ParseResult<Timestamp> {
         let mut year = -1;
@@ -206,32 +209,37 @@ fn expected_time(
     }).is_none()
 }
 
-fn add_image(
-    tags: &mut Tag,
+fn get_image(
     image_url: &str,
-) -> Result<(), SimpleError> {
+)  -> Result<Vec<u8>, SimpleError> {
     reqwest::get(image_url).map_err(SimpleError::from).and_then(|response| {
         response.bytes().map(|byte_res| {
             byte_res.map_err(SimpleError::from)
-        }).collect::<Result<Vec<u8>, SimpleError>>().map(|data| {
-            tags.add_picture(Picture {
-                mime_type: "image/jpeg".to_string(),
-                picture_type: PictureType::CoverFront,
-                description: format!(
-                    "Cover for {} by {}",
-                    tags.album().expect("error in writing tags"),
-                    tags.artist().expect("error in writing tags"),
-                ),
-                data: data,
-            });
-        })
+        }).collect()
     })
+}
+
+fn add_image(
+    tags: &mut Tag,
+    image: &Vec<u8>,
+) {
+    tags.add_picture(Picture {
+        mime_type: "image/jpeg".to_string(),
+        picture_type: PictureType::CoverFront,
+        description: format!(
+            "Cover for {} by {}",
+            tags.album().expect("error in writing tags"),
+            tags.artist().expect("error in writing tags"),
+        ),
+        data: image.clone(),
+    });
 }
 
 fn annotate_tags(
     tags: &mut Tag,
     file: &PathBuf,
     track_data: TrackData,
+    album_image: &Vec<u8>,
 ) -> String {
     lazy_static! {
         static ref INVALID_FILE_CHRS: Regex = Regex::new(r"[^\w\s.\(\)]+").unwrap();
@@ -265,24 +273,21 @@ fn annotate_tags(
     tags.set_title(track_data.track_name);
     tags.set_track(track_data.track_number as u32);
 
-    track_data.image_url.ok_or(SimpleError {
-        msg: format!("no image for {}", file.display()),
-    }).and_then(|url| {
-        add_image(tags, &url[..])
-    }).unwrap_or_else(|err| {
-        println!("error getting image for {}: {}", file.display(), err.msg);
-    });
-        
+    if !album_image.is_empty() {
+        add_image(tags, album_image)
+    }
+    
     INVALID_FILE_CHRS.replace_all(&new_name[..], "_").to_string()
 }
 
 fn annotate_file(
     file: &PathBuf,
     track_data: TrackData,
+    album_image: &Vec<u8>,
     rename_file: bool,
 ) -> Result<(), SimpleError> {
     let mut tags = Tag::new();
-    let new_name = annotate_tags(&mut tags, file, track_data);
+    let new_name = annotate_tags(&mut tags, file, track_data, album_image);
 
     tags.write_to_path(file, Version::Id3v24).map_err(SimpleError::from)
         .and_then(|_| {
@@ -312,7 +317,7 @@ pub fn annotate(
 
     let mut rename_files = true;
     let files = get_tracks_files(&abs_path)?;
-    let data = get_tracks_data(album_full, client_with_token)?;
+    let mut data = get_tracks_data(album_full, client_with_token)?;
     if files.len() != data.len() {
         println!(
             "number of files in {} should be {}, not renaming",
@@ -322,10 +327,41 @@ pub fn annotate(
         rename_files = false;
     }
 
+    let album_image = album_full.images.iter().next().map(|image| {
+        image.url.clone()
+    }).map(|url| {
+        get_image(&url[..]).unwrap_or_else(|err| {
+            println!("error getting image for {}: {}", album_full.name, err.msg);
+            vec![]
+        })
+    }).unwrap_or_else(|| {
+        println!("no image for {}", album_full.name);
+        vec![]
+    });
+    let mut track_counter = data.len() as i32;
+    data.extend(repeat_with(|| {
+        let track_data = TrackData {
+            album_name: album_full.name.clone(),
+            album_artists: album_full.artists.iter().map(|artist| {
+                artist.name.clone()
+            }).collect::<Vec<String>>().join(", "),
+            release_date: TrackData::release_date_from(album_full).ok(),
+            image_url: album_full.images.iter().next().map(|image| {
+                image.url.clone()
+            }),
+
+            track_name: "unknown track name".to_string(),
+            track_number: track_counter,
+            track_artists: None,
+            expected_duration_ms: 0,
+        };
+        track_counter += 1;
+        track_data
+    }).take(files.len()));
     files.iter().zip(
-        data.into_iter()
+        data.into_iter(),
     ).map(|(track_file, track_data)| {
-        annotate_file(track_file, track_data, rename_files)
+        annotate_file(track_file, track_data, &album_image, rename_files)
             .and_then(|_| {
                 add_whitelist(dir.to_string_lossy().to_string())
             })

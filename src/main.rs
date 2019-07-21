@@ -58,6 +58,7 @@ fn main() {
         ).expect("error fetching albums");
 
         albums.into_iter().zip(albums_full.into_iter()).map(|(dir, album)| {
+            println!("annotating {}", dir.display());
             annotate::annotate(&dir, &album, &client_with_token)
         }).collect::<Result<(), types::SimpleError>>()
             .expect("error in annotating");
