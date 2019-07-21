@@ -41,6 +41,7 @@ fn main() {
     let albums = utils::get_albums().expect("error reading albums");
     if test_run {
         albums.into_iter().map(|album| {
+            println!("verifying {}", album.display());
             annotate::test_run(&album)
         }).collect::<Result<(), types::SimpleError>>()
             .expect("error in removing annotations")
